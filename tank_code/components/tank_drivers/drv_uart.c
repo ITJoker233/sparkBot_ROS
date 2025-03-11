@@ -1,4 +1,5 @@
 #include "drv_uart.h"
+#include "drv_motor.h"
 
 static const char *TAG = "drv_urat";
 
@@ -105,10 +106,108 @@ int extractXY(const char *input, int x[], int y[])
     return count;
 }
 
+#define MAX_PAIRS 15  // llm最多几个命令
+
 void drv_uart0_callback(uint8_t *buffer, size_t buffer_size)
 {
+    static int   uart_read_count    = 0;
+    static bool  uart_read_web_flag = false;
+    static float x_value            = 0.0f;
+    static float y_value            = 0.0f;
+    static int   x_llm[MAX_PAIRS];
+    static int   y_llm[MAX_PAIRS];
+    static int   llm_pair_count = 0;
+    static int   llm_index      = 0;
     if (buffer_size > 0)
     {
+        buffer[buffer_size] = '\0';
+        char command        = 0;
+        ESP_LOGI(TAG, "Recv DATA: %s", (char *)buffer);
+        sscanf((const char *)buffer, "%c", &command);
+        ESP_LOGI(TAG, "Recv command: %c", command);
+        switch (command)
+        {
+        case 'l': {
+            if (bsp_app_handle.app_run_mode != BSP_APP_MODE_MANUAL_CONTROL)
+            {
+                bsp_app_handle.app_run_mode = BSP_APP_MODE_UART_CONTROL;
+
+                llm_pair_count = extractXY((const char *)(buffer + 1), x_llm, y_llm);
+                if (llm_pair_count)
+                {
+                    llm_index       = 0;
+                    uart_read_count = 0;
+                    ESP_LOGI(TAG, "llm_pair_count: %d\n", llm_pair_count);
+                }
+            }
+            break;
+        }
+        case 'x': {
+            if (bsp_app_handle.app_run_mode != BSP_APP_MODE_MANUAL_CONTROL)
+            {
+                bsp_app_handle.app_run_mode = BSP_APP_MODE_UART_CONTROL;
+
+                if (sscanf((const char *)buffer, "x%f y%f", &x_value, &y_value) == 2)
+                {
+                    uart_read_count    = 0;
+                    uart_read_web_flag = true;
+                    ESP_LOGI(TAG, "Parsed x: %.2f, y: %.2f\n", x_value, y_value);
+                    drv_motor_action_control(x_value, y_value);
+                }
+            }
+            break;
+        }
+        case 'w': {
+            // 灯光模式
+            int value = 0;
+            if (sscanf((const char *)(buffer + 1), "%d", &value) == 1)
+            {
+            }
+            break;
+        }
+        case 'c': {
+            // 红外循迹
+            if (bsp_app_handle.app_run_mode != BSP_APP_MODE_MANUAL_CONTROL)
+            {
+                bsp_app_handle.app_run_mode = BSP_APP_MODE_AUTO_TRACKING;
+            }
+            break;
+        }
+        case 'd': {
+            // 跳舞
+            break;
+        }
+        default: {
+            ESP_LOGW(TAG, "Unknown command: %c", command);
+            break;
+        }
+        }
+        if (uart_read_web_flag == true)
+        {
+            uart_read_count++;  // 累计没有读取到数据的次数，直到25*20ms后（0.5s），自动停止
+            if (uart_read_count > 25)
+            {
+                uart_read_count    = 0;
+                uart_read_web_flag = false;
+                drv_motor_action_control(0, 0);
+            }
+        }
+        else if (llm_index < llm_pair_count)
+        {
+            uart_read_count++;  // 累计没有读取到数据的次数，直到40*20ms后（0.8s），自动停止
+            if (uart_read_count > 40)
+            {
+                ESP_LOGI(TAG, "llm index: %d", llm_index);
+                uart_read_count = 0;
+                ESP_LOGI(TAG, "X = %d, Y = %d", x_llm[llm_index], y_llm[llm_index]);
+                drv_motor_set_speed(x_llm[llm_index], y_llm[llm_index]);
+                llm_index++;
+            }
+            if (llm_index == llm_pair_count)  // llm对话命令执行结束
+            {
+                uart_read_web_flag = true;
+            }
+        }
     }
 }
 
